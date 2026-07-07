@@ -1,0 +1,1 @@
+# ForexAI application package
