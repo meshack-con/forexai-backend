@@ -1,3 +1,8 @@
+import sys
+from pathlib import Path
+# ensure project root is on sys.path so scripts run without PYTHONPATH
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import traceback
 from app.services.backtester import Backtester
 
