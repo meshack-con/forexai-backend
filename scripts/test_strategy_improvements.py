@@ -79,9 +79,6 @@ class Backtester:
         timeframe: str = "M15",
         strategy_version: int = 0,
         label: str | None = None,
-        sl_atr_mult: float = 1.5,
-        tp_atr_mult: float = 2.5,
-        adx_threshold: float = 25.0,
     ):
         self.account_id = account_id
         self.symbol = symbol
@@ -92,16 +89,11 @@ class Backtester:
         # compared side by side without overwriting each other's data.
         # `self.symbol` is still used for the real MT5 lookup.
         self.label = label or symbol
-        # ATR multipliers for HATUA 3 (only used when strategy_version >= 3)
-        self.sl_atr_mult = sl_atr_mult
-        self.tp_atr_mult = tp_atr_mult
-        # ADX minimum strength for HATUA 2 (only used when strategy_version >= 2)
-        self.adx_threshold = adx_threshold
 
     def _symbol_to_mt5(self) -> str:
         return self.symbol.replace("/", "")
 
-    def _fetch_historical_data(self, days: int = 365, date_to: datetime | None = None) -> pd.DataFrame:
+    def _fetch_historical_data(self, days: int = 365) -> pd.DataFrame:
         import MetaTrader5 as mt5
 
         initialized = mt5.initialize()
@@ -111,18 +103,9 @@ class Backtester:
 
         mt5_symbol = self._symbol_to_mt5()
         timeframe = getattr(mt5, f"TIMEFRAME_{self.timeframe}")
-
-        if date_to is not None:
-            # Fetch an explicit historical window [date_to - days, date_to],
-            # used for out-of-sample validation on a period that was not
-            # used to choose strategy parameters.
-            utc_from = date_to - timedelta(days=days)
-            rates = mt5.copy_rates_range(mt5_symbol, timeframe, utc_from, date_to)
-        else:
-            utc_from = datetime.utcnow() - timedelta(days=days)
-            rates = mt5.copy_rates_from(mt5_symbol, timeframe, utc_from, 10000)
-
-        if rates is None or len(rates) == 0:
+        utc_from = datetime.utcnow() - timedelta(days=days)
+        rates = mt5.copy_rates_from(mt5_symbol, timeframe, utc_from, 10000)
+        if rates is None:
             raise RuntimeError(f"Failed to download historical data for {mt5_symbol}")
 
         df = pd.DataFrame(rates)
@@ -150,15 +133,8 @@ class Backtester:
 
         tr = self._calculate_atr(df, 1)
 
-        # IMPORTANT: use df.index here, otherwise pd.Series(plus_dm) gets a
-        # default integer RangeIndex, and dividing by tr (which has df's
-        # datetime index) causes pandas to align on mismatched indices,
-        # producing all-NaN columns.
-        plus_dm_series = pd.Series(plus_dm, index=df.index)
-        minus_dm_series = pd.Series(minus_dm, index=df.index)
-
-        plus_di = 100 * plus_dm_series.rolling(window=period).mean() / tr.rolling(window=period).mean()
-        minus_di = 100 * minus_dm_series.rolling(window=period).mean() / tr.rolling(window=period).mean()
+        plus_di = 100 * pd.Series(plus_dm).rolling(window=period).mean() / tr.rolling(window=period).mean()
+        minus_di = 100 * pd.Series(minus_dm).rolling(window=period).mean() / tr.rolling(window=period).mean()
 
         dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
         adx = dx.rolling(window=period).mean()
@@ -207,8 +183,8 @@ class Backtester:
 
         # HATUA 2: Add ADX filter (only trade in trending markets)
         if self.strategy_version >= 2:
-            buy_base = buy_base & (df["adx"] > self.adx_threshold)
-            sell_base = sell_base & (df["adx"] > self.adx_threshold)
+            buy_base = buy_base & (df["adx"] > 25)
+            sell_base = sell_base & (df["adx"] > 25)
 
         # HATUA 4: Candle confirmation (check if next candle closes on right side)
         if self.strategy_version >= 4:
@@ -237,16 +213,16 @@ class Backtester:
                 position = "buy" if signal == 1 else "sell"
                 entry_price = row["close"]
 
-                # HATUA 3: Use ATR-based SL/TP (multipliers are configurable)
+                # HATUA 3: Use ATR-based SL/TP
                 if self.strategy_version >= 3:
                     atr = row.get("atr", 0.0)
                     if atr > 0:
                         if position == "buy":
-                            stop_loss = entry_price - (self.sl_atr_mult * atr)
-                            take_profit = entry_price + (self.tp_atr_mult * atr)
+                            stop_loss = entry_price - (1.5 * atr)
+                            take_profit = entry_price + (2.5 * atr)
                         else:
-                            stop_loss = entry_price + (self.sl_atr_mult * atr)
-                            take_profit = entry_price - (self.tp_atr_mult * atr)
+                            stop_loss = entry_price + (1.5 * atr)
+                            take_profit = entry_price - (2.5 * atr)
                     else:
                         # Fallback to percentage-based if ATR not available
                         stop_loss = (
@@ -318,14 +294,8 @@ class Backtester:
                     position = None
         return [trade for trade in trades if trade["status"] == "closed"]
 
-    def run(
-        self,
-        days: int = 180,
-        stop_loss_pct: float = 0.5,
-        take_profit_pct: float = 1.0,
-        date_to: datetime | None = None,
-    ) -> dict:
-        df = self._fetch_historical_data(days, date_to=date_to)
+    def run(self, days: int = 180, stop_loss_pct: float = 0.5, take_profit_pct: float = 1.0) -> dict:
+        df = self._fetch_historical_data(days)
         df = self._calculate_indicators(df)
         df = self._generate_signals(df)
         trades = self._simulate_trades(df, stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct)
