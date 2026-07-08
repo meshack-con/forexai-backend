@@ -318,6 +318,26 @@ class Backtester:
                     position = None
         return [trade for trade in trades if trade["status"] == "closed"]
 
+    def get_latest_signal(self, days: int = 60) -> dict:
+        """Fetch recent data, compute indicators/signals using the EXACT same
+        logic as backtesting, and return the state of the most recently
+        CLOSED candle. This is what the live/demo engine should call - it
+        guarantees live signals never diverge from validated backtest logic."""
+        df = self._fetch_historical_data(days)
+        df = self._calculate_indicators(df)
+        df = self._generate_signals(df)
+
+        if df.empty:
+            raise RuntimeError("No data available to compute a live signal (all rows dropped by indicator warmup)")
+
+        last_row = df.iloc[-1]
+        return {
+            "timestamp": df.index[-1].to_pydatetime(),
+            "signal": int(last_row["signal"]),
+            "close": float(last_row["close"]),
+            "atr": float(last_row.get("atr", 0.0)) if self.strategy_version >= 3 else None,
+        }
+
     def run(
         self,
         days: int = 180,
