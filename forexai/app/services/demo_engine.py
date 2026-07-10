@@ -84,6 +84,10 @@ def check_and_close_finished_trades(account_id: str, symbol: str) -> None:
             },
         )
         logger.info(f"Closed demo trade {trade['id']} for {symbol}: profit_loss={closing_deal.profit}")
+        print(
+            f"  🔔 TRADE CLOSED for {symbol}: profit_loss={closing_deal.profit:.2f}, exit_price={closing_deal.price}",
+            flush=True,
+        )
 
 
 def try_open_new_trade(account_id: str, config: dict, risk_settings: dict) -> None:
@@ -109,7 +113,10 @@ def try_open_new_trade(account_id: str, config: dict, risk_settings: dict) -> No
     latest = backtester.get_latest_signal(days=60)
 
     if latest["signal"] == 0:
+        print(f"  no signal on latest {symbol} candle ({latest['timestamp']})", flush=True)
         return  # no signal on the most recent closed candle
+
+    print(f"  SIGNAL DETECTED on {symbol}: {'BUY' if latest['signal']==1 else 'SELL'} at {latest['timestamp']}", flush=True)
 
     account_info = mt5.account_info()
     if account_info is None:
@@ -120,6 +127,7 @@ def try_open_new_trade(account_id: str, config: dict, risk_settings: dict) -> No
     daily_pl = sum(t["profit_loss"] for t in closed_today)
     if check_daily_loss_limit(account_info.balance, risk_settings["daily_loss_limit_pct"], daily_pl):
         update_bot_status(account_id, status="stopped", current_mode="demo", notes="Daily loss limit hit - trading paused")
+        print(f"  DAILY LOSS LIMIT HIT for {symbol} - skipping new trades today", flush=True)
         logger.warning(f"Daily loss limit hit for {symbol}, skipping new trades today")
         return
 
@@ -164,6 +172,7 @@ def try_open_new_trade(account_id: str, config: dict, risk_settings: dict) -> No
 
     result = mt5.order_send(request)
     if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        print(f"  ORDER FAILED for {symbol}: {result}", flush=True)
         logger.error(f"Order send failed for {symbol}: {result}")
         return
 
@@ -187,6 +196,11 @@ def try_open_new_trade(account_id: str, config: dict, risk_settings: dict) -> No
         }
     )
     logger.info(f"Opened demo {'buy' if is_buy else 'sell'} on {symbol}: lot={lot_size}, sl={stop_loss}, tp={take_profit}")
+    print(
+        f"  ✅ OPENED DEMO {'BUY' if is_buy else 'SELL'} on {symbol}: "
+        f"lot={lot_size}, entry={result.price}, sl={stop_loss:.5f}, tp={take_profit:.5f}",
+        flush=True,
+    )
 
 
 def run_cycle(account_id: str, symbol: str) -> None:
